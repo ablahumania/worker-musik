@@ -1,11 +1,11 @@
-const CONVEX_URL = process.env.CONVEX_URL;
-
-if (!CONVEX_URL) {
-  throw new Error("CONVEX_URL is required");
+function getConvexUrl() {
+  const url = process.env.CONVEX_URL;
+  if (!url) throw new Error("CONVEX_URL is required");
+  return url;
 }
 
 export async function queryFn(path, args) {
-  const res = await fetch(`${CONVEX_URL}/api/query`, {
+  const res = await fetch(`${getConvexUrl()}/api/query`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path, args }),
@@ -21,7 +21,7 @@ export async function queryFn(path, args) {
 }
 
 export async function mutationFn(path, args) {
-  const res = await fetch(`${CONVEX_URL}/api/mutation`, {
+  const res = await fetch(`${getConvexUrl()}/api/mutation`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path, args }),

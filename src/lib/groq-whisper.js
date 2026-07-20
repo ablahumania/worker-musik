@@ -44,10 +44,11 @@ export async function transcribeAudio(audioUrl, title) {
   const buffer = Buffer.from(await response.arrayBuffer());
   const audioFile = new File([buffer], `${title}.mp3`, { type: "audio/mpeg" });
 
-  console.log(`[Whisper] Transcribing with Groq Whisper (auto-detect)...`);
-  let transcription = await doTranscribe(audioFile);
+  console.log(`[Whisper] Transcribing with Groq Whisper (language: id)...`);
+  let transcription = await doTranscribe(audioFile, "id");
 
-  console.log(`[Whisper] Detected language: ${transcription.language}`);
+  const detectedLang = transcription.language || "id";
+  console.log(`[Whisper] Detected language: ${detectedLang}`);
 
   if (!isLatinText(transcription.text || "")) {
     console.log(`[Whisper] Non-Latin result detected, retrying with English...`);
