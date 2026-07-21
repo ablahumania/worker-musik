@@ -35,8 +35,8 @@ export async function processLyrics(songId, { artist, title, duration, audioUrl 
     return null;
   }
 
-  if (!process.env.GROQ_API_KEY) {
-    console.log(`[Lyrics] No GROQ_API_KEY, cannot use Whisper fallback`);
+  if (!process.env.GROQ_API_KEY_1 && !process.env.GROQ_API_KEY_2 && !process.env.GROQ_API_KEY_3 && !process.env.GROQ_API_KEY) {
+    console.log(`[Lyrics] No GROQ_API_KEY found, cannot use Whisper fallback`);
     return null;
   }
 

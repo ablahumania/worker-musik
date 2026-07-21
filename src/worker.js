@@ -79,7 +79,8 @@ async function poll() {
 
 console.log("[Worker] Starting lyrics worker (Convex polling mode)...");
 console.log(`[Worker] Convex URL: ${CONVEX_URL}`);
-console.log(`[Worker] Groq API: ${process.env.GROQ_API_KEY ? "configured" : "NOT SET"}`);
+const keyCount = [process.env.GROQ_API_KEY_1, process.env.GROQ_API_KEY_2, process.env.GROQ_API_KEY_3].filter(Boolean).length;
+console.log(`[Worker] Groq API keys: ${keyCount > 0 ? `${keyCount} configured` : "NOT SET"}`);
 console.log(`[Worker] Poll interval: ${POLL_INTERVAL}ms`);
 
 async function run() {

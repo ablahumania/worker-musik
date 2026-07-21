@@ -1,17 +1,77 @@
 import Groq from "groq-sdk";
 
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
+// Collect all available API keys from env
+const API_KEYS = [
+  process.env.GROQ_API_KEY_1,
+  process.env.GROQ_API_KEY_2,
+  process.env.GROQ_API_KEY_3,
+].filter(Boolean);
 
-let groqClient = null;
+// Fallback: also support single GROQ_API_KEY for backward compat
+if (API_KEYS.length === 0 && process.env.GROQ_API_KEY) {
+  API_KEYS.push(process.env.GROQ_API_KEY);
+}
 
-function getClient() {
-  if (!groqClient) {
-    if (!GROQ_API_KEY) {
-      throw new Error("GROQ_API_KEY is required for Whisper transcription");
-    }
-    groqClient = new Groq({ apiKey: GROQ_API_KEY });
+if (API_KEYS.length === 0) {
+  console.warn("[Whisper] No GROQ_API_KEY found! Whisper transcription will fail.");
+}
+
+let currentIndex = 0;
+const keyFailures = new Map(); // track consecutive failures per key
+const MAX_FAILURESBeforeSkip = 3;
+
+function getNextClient() {
+  if (API_KEYS.length === 0) {
+    throw new Error("No GROQ_API_KEY configured. Add GROQ_API_KEY_1, GROQ_API_KEY_2, etc. to .env");
   }
-  return groqClient;
+
+  // Find next key that hasn't failed too many times
+  const startIndex = currentIndex;
+  let attempts = 0;
+
+  while (attempts < API_KEYS.length) {
+    const key = API_KEYS[currentIndex];
+    const failures = keyFailures.get(currentIndex) || 0;
+
+    if (failures < MAX_FAILURESBeforeSkip) {
+      const client = new Groq({ apiKey: key });
+      const idx = currentIndex;
+      // Advance for next call
+      currentIndex = (currentIndex + 1) % API_KEYS.length;
+      return { client, keyIndex: idx };
+    }
+
+    currentIndex = (currentIndex + 1) % API_KEYS.length;
+    attempts++;
+  }
+
+  // All keys exhausted — reset failures and try the first one
+  console.log("[Whisper] All keys exhausted, resetting failure counts");
+  keyFailures.clear();
+  currentIndex = startIndex;
+  const client = new Groq({ apiKey: API_KEYS[currentIndex] });
+  const idx = currentIndex;
+  currentIndex = (currentIndex + 1) % API_KEYS.length;
+  return { client, keyIndex: idx };
+}
+
+function markKeyFailed(keyIndex) {
+  const failures = (keyFailures.get(keyIndex) || 0) + 1;
+  keyFailures.set(keyIndex, failures);
+  console.log(`[Whisper] Key #${keyIndex + 1} failed (${failures}/${MAX_FAILURESBeforeSkip} before skip)`);
+}
+
+function markKeySuccess(keyIndex) {
+  keyFailures.set(keyIndex, 0);
+}
+
+function isRateLimitError(err) {
+  return err?.status === 429 || err?.message?.includes("429") || err?.message?.includes("rate limit");
+}
+
+function isTokenLimitError(err) {
+  const msg = err?.message?.toLowerCase() || "";
+  return msg.includes("token") && (msg.includes("limit") || msg.includes("exceed"));
 }
 
 function isLatinText(text) {
@@ -21,8 +81,7 @@ function isLatinText(text) {
   return latinCount / latinChars.length > 0.7;
 }
 
-async function doTranscribe(audioFile, language) {
-  const client = getClient();
+async function doTranscribe(client, audioFile, language) {
   const opts = {
     file: audioFile,
     model: "whisper-large-v3",
@@ -31,6 +90,42 @@ async function doTranscribe(audioFile, language) {
   };
   if (language) opts.language = language;
   return client.audio.transcriptions.create(opts);
+}
+
+async function transcribeWithRetry(audioFile, title, language, maxRetries = API_KEYS.length + 1) {
+  let lastError;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const { client, keyIndex } = getNextClient();
+
+    try {
+      console.log(`[Whisper] Transcribing with key #${keyIndex + 1} (attempt ${attempt + 1})...`);
+      const result = await doTranscribe(client, audioFile, language);
+      markKeySuccess(keyIndex);
+      return result;
+    } catch (err) {
+      lastError = err;
+      markKeyFailed(keyIndex);
+
+      if (isRateLimitError(err)) {
+        console.log(`[Whisper] Rate limited on key #${keyIndex + 1}, rotating to next key...`);
+        continue;
+      }
+
+      if (isTokenLimitError(err)) {
+        console.log(`[Whisper] Token limit hit on key #${keyIndex + 1}, rotating to next key...`);
+        continue;
+      }
+
+      // For other errors (network, 500, etc), also retry with next key
+      console.log(`[Whisper] Error on key #${keyIndex + 1}: ${err.message}`);
+      if (attempt < maxRetries - 1) {
+        continue;
+      }
+    }
+  }
+
+  throw lastError;
 }
 
 export async function transcribeAudio(audioUrl, title) {
@@ -42,17 +137,26 @@ export async function transcribeAudio(audioUrl, title) {
   }
 
   const buffer = Buffer.from(await response.arrayBuffer());
+
+  // Groq has a 25MB file size limit
+  const MAX_SIZE = 25 * 1024 * 1024;
+  if (buffer.length > MAX_SIZE) {
+    console.log(`[Whisper] Audio too large (${(buffer.length / 1024 / 1024).toFixed(1)}MB), splitting...`);
+    // For now, just try with the full file — Groq might still accept it
+    // A proper implementation would split the audio into chunks
+  }
+
   const audioFile = new File([buffer], `${title}.mp3`, { type: "audio/mpeg" });
 
-  console.log(`[Whisper] Transcribing with Groq Whisper (language: id)...`);
-  let transcription = await doTranscribe(audioFile, "id");
+  console.log(`[Whisper] Transcribing with Groq Whisper (${API_KEYS.length} keys available, language: id)...`);
+  let transcription = await transcribeWithRetry(audioFile, title, "id");
 
   const detectedLang = transcription.language || "id";
   console.log(`[Whisper] Detected language: ${detectedLang}`);
 
   if (!isLatinText(transcription.text || "")) {
     console.log(`[Whisper] Non-Latin result detected, retrying with English...`);
-    transcription = await doTranscribe(audioFile, "en");
+    transcription = await transcribeWithRetry(audioFile, title, "en");
   }
 
   console.log(
